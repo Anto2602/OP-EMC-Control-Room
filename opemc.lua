@@ -187,8 +187,13 @@ term.redirect(mon)
 local monW, monH = term.getSize()
 
 local originalAquarium = "OP_EMC_AQUARIUM_SOURCE.gif"
-local aquariumH = math.max(1, monH - 5)
-local storedAquarium = "GIFs/" .. monW .. "x" .. aquariumH .. "_aquarium_hud.gif"
+
+-- The aquarium is intentionally smaller than the 57x24 monitor so it can sit
+-- centered in the middle display instead of being pushed into one side.
+local aquariumW = math.min(34, math.max(20, monW - 12))
+local aquariumH = math.min(14, math.max(8, monH - 10))
+local storedAquarium = "GIFs/" .. aquariumW .. "x" .. aquariumH .. "_aquarium_center.gif"
+
 if not fs.exists("GIF") then
     shell.run("pastebin", "get", "5uk9uRjC", "GIF")
 end
@@ -203,7 +208,7 @@ end
 if not fs.exists("GIFs") then fs.makeDir("GIFs") end
 if not fs.exists(storedAquarium) then
     local image = GIF.loadGIF(originalAquarium)
-    image = GIF.resizeGIF(image, monW, aquariumH)
+    image = GIF.resizeGIF(image, aquariumW, aquariumH)
     GIF.saveGIF(image, storedAquarium)
 end
 local image = GIF.loadGIF(storedAquarium)
@@ -229,7 +234,7 @@ local reserveCount = 64
 local trackedEMCPerRMF = 10059784
 local rodEMC = 1536
 local totalTransferred = 0
-local lastCheckTime = os.clock()
+local lastCheckTime = wallSeconds()
 
 local powderCondensers = {}
 local rmfCondensers = {}
@@ -615,7 +620,16 @@ local function formatUptime(seconds)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
 
-local liveStart = os.clock()
+-- Use wall time for live throughput. os.clock() can advance differently from
+-- real elapsed time on some CC environments, which can leave LIVE EMC at 0.
+local function wallSeconds()
+    if os.epoch then
+        return os.epoch("utc") / 1000
+    end
+    return os.clock()
+end
+
+local liveStart = wallSeconds()
 local liveTransferred = totalTransferred
 local liveEmcPerMinute = 0
 local liveRodsPerSecond = 0
@@ -684,59 +698,74 @@ end
 local function drawCenterHud(m, stats)
     if not m then return end
     local w, h = m.getSize()
-    local panelW = math.floor(w * 0.48)
 
-    -- Clear only the data area, leaving the aquarium area free for animation.
-    for y = 1, math.min(h, 6) do
-        writeAt(m, 1, y, string.rep(" ", panelW), colors.white, colors.black)
-    end
+    -- Clear the monitor before drawing the central control-room panel.
+    m.setBackgroundColor(colors.black)
+    m.setTextColor(colors.white)
+    m.clear()
 
     centerAt(m, 1, "MAIN CORE // EMC", colors.white, colors.black)
-    writeAt(m, 2, 2, "EMC/m", colors.gray, colors.black)
-    writeAt(m, 10, 2, shortNumber(stats.emcMin), colors.lime, colors.black)
-    writeAt(m, 2, 3, "EMC/M", colors.gray, colors.black)
-    writeAt(m, 10, 3, shortNumber(stats.emcHour), colors.lightBlue, colors.black)
-    writeAt(m, 2, 4, "EMC/s", colors.gray, colors.black)
-    writeAt(m, 10, 4, shortNumber(stats.emcSec), colors.lightBlue, colors.black)
-    writeAt(m, 2, 5, "RODS/s", colors.gray, colors.black)
-    writeAt(m, 10, 5, shortNumber(stats.liveRodsSec), colors.orange, colors.black)
-    writeAt(m, 2, 6, "LIVE/m", colors.gray, colors.black)
-    writeAt(m, 10, 6, shortNumber(stats.liveEmcMin), colors.white, colors.black)
+    writeAt(m, math.max(2, w - 13), 1, "[ ONLINE ]", colors.lime, colors.black)
 
-    -- Small animated EMC core at the top-right, like the reference control panel.
-    local coreCx = math.min(w - 8, panelW + 8)
-    local coreCy = 4
+    -- Compact live values across the top.
+    writeAt(m, 3, 3, "EMC/m", colors.gray, colors.black)
+    writeAt(m, 10, 3, shortNumber(stats.liveEmcMin), colors.lime, colors.black)
+
+    writeAt(m, 22, 3, "EMC/s", colors.gray, colors.black)
+    writeAt(m, 29, 3, shortNumber(stats.liveEmcSec), colors.lightBlue, colors.black)
+
+    writeAt(m, 3, 4, "RODS/s", colors.gray, colors.black)
+    writeAt(m, 11, 4, shortNumber(stats.liveRodsSec), colors.orange, colors.black)
+
+    writeAt(m, 22, 4, "RMF", colors.gray, colors.black)
+    writeAt(m, 27, 4, shortNumber(stats.rmf), colors.orange, colors.black)
+
+    -- Small animated EMC-core indicator above the aquarium.
+    local coreCx = math.floor(w / 2)
+    local coreCy = 6
     local phase = animationFrame % 8
     local dots = {"o", "O", "0", "O"}
     for i = 1, 4 do
         local ang = (phase + i * 2) * math.pi / 4
-        local px = math.floor(coreCx + math.cos(ang) * 5)
-        local py = math.floor(coreCy + math.sin(ang) * 2)
-        writeAt(m, px, py, dots[(i % #dots) + 1], colors.purple, colors.black)
+        local px = math.floor(coreCx + math.cos(ang) * 4)
+        local py = math.floor(coreCy + math.sin(ang) * 1)
+        if px >= 1 and px <= w and py >= 1 and py <= h then
+            writeAt(m, px, py, dots[(i % #dots) + 1], colors.purple, colors.black)
+        end
     end
 
-    -- Aquarium animation is rendered by drawAllMonitors().
-    -- Keeping it in one loop avoids competing GIF render calls.
+    -- Aquarium is centered on the physical center of the monitor.
+    local ix = math.floor((w - image.width) / 2) + 1
+    local iy = 8
 
-    -- Repaint the left HUD after the animation frame in case the image overlaps.
-    for y = 1, 6 do
-        writeAt(m, 1, y, string.rep(" ", panelW), colors.white, colors.black)
+    -- Frame around the aquarium so it reads as the centerpiece.
+    local frameX = math.max(1, ix - 1)
+    local frameY = math.max(7, iy - 1)
+    local frameW = math.min(w - frameX + 1, image.width + 2)
+    local frameH = math.min(h - frameY + 1, image.height + 2)
+
+    if frameW >= 2 and frameH >= 2 then
+        writeAt(m, frameX, frameY, "+" .. string.rep("-", frameW - 2) .. "+", colors.gray, colors.black)
+        for y = frameY + 1, frameY + frameH - 2 do
+            writeAt(m, frameX, y, "|", colors.gray, colors.black)
+            writeAt(m, frameX + frameW - 1, y, "|", colors.gray, colors.black)
+        end
+        writeAt(m, frameX, frameY + frameH - 1,
+            "+" .. string.rep("-", frameW - 2) .. "+", colors.gray, colors.black)
     end
-    centerAt(m, 1, "MAIN CORE // EMC", colors.white, colors.black)
-    writeAt(m, 2, 2, "EMC/m", colors.gray, colors.black)
-    writeAt(m, 10, 2, shortNumber(stats.emcMin), colors.lime, colors.black)
-    writeAt(m, 2, 3, "EMC/M", colors.gray, colors.black)
-    writeAt(m, 10, 3, shortNumber(stats.emcHour), colors.lightBlue, colors.black)
-    writeAt(m, 2, 4, "EMC/s", colors.gray, colors.black)
-    writeAt(m, 10, 4, shortNumber(stats.emcSec), colors.lightBlue, colors.black)
-    writeAt(m, 2, 5, "RODS/s", colors.gray, colors.black)
-    writeAt(m, 10, 5, shortNumber(stats.liveRodsSec), colors.orange, colors.black)
-    writeAt(m, 2, 6, "LIVE/m", colors.gray, colors.black)
-    writeAt(m, 10, 6, shortNumber(stats.liveEmcMin), colors.white, colors.black)
 
-    local statusX = math.max(1, w - 12)
-    writeAt(m, statusX, 1, "[ ONLINE ]", colors.lime, colors.black)
-    writeAt(m, math.max(1, w - 13), h, "RMF:" .. shortNumber(stats.rmf), colors.orange, colors.black)
+    -- GIF frame is drawn here; drawAllMonitors() updates it in the same loop.
+    term.redirect(m)
+    m.setBackgroundColor(image.backgroundCol or colors.black)
+    GIF.animateGIF(image, ix, iy)
+
+    -- Restore the labels below the aquarium after the GIF frame.
+    if h >= 23 then
+        centerAt(m, h - 1, "TRANSFER ENGINE ACTIVE", colors.lime, colors.black)
+        centerAt(m, h, "(C) Anto2602", colors.red, colors.black)
+    else
+        centerAt(m, h, "(C) Anto2602", colors.red, colors.black)
+    end
 end
 
 local function drawRight(m, stats)
@@ -788,9 +817,14 @@ local function drawAllMonitors()
         if now >= nextLiveReset then
             local elapsed = now - liveStart
             if elapsed <= 0 then elapsed = 0.001 end
+
             local moved = totalTransferred - liveTransferred
-            liveEmcPerMinute = (moved * rodEMC) / (elapsed / 60)
+
+            -- Live rate = rods actually transferred during the last 5 seconds.
+            -- This is independent of the long-term historical average.
+            liveEmcPerMinute = (moved * rodEMC) * (60 / elapsed)
             liveRodsPerSecond = moved / elapsed
+
             liveTransferred = totalTransferred
             liveStart = now
             nextLiveReset = now + 5
@@ -833,13 +867,12 @@ local function drawAllMonitors()
 
         animationFrame = animationFrame + 1
 
-        -- Center aquarium is animated every frame; HUD data refreshes once/sec.
+        -- Advance the centered aquarium frame without redrawing the whole HUD.
         if centerMon and image then
             local m = centerMon.monitor
             local w, h = m.getSize()
-            local panelW = math.floor(w * 0.48)
-            local ix = math.max(panelW + 2, w - image.width + 1)
-            local iy = math.max(7, h - image.height)
+            local ix = math.floor((w - image.width) / 2) + 1
+            local iy = 8
             term.redirect(m)
             m.setBackgroundColor(image.backgroundCol or colors.black)
             GIF.animateGIF(image, ix, iy)
