@@ -233,6 +233,14 @@ end
 local reserveCount = 64
 local trackedEMCPerRMF = 10059784
 local rodEMC = 1536
+
+-- Use wall time for live throughput and long-term rate calculations.
+local function wallSeconds()
+    if os.epoch then
+        return os.epoch("utc") / 1000
+    end
+    return os.clock()
+end
 local totalTransferred = 0
 local lastCheckTime = wallSeconds()
 
@@ -620,14 +628,6 @@ local function formatUptime(seconds)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
 
--- Use wall time for live throughput. os.clock() can advance differently from
--- real elapsed time on some CC environments, which can leave LIVE EMC at 0.
-local function wallSeconds()
-    if os.epoch then
-        return os.epoch("utc") / 1000
-    end
-    return os.clock()
-end
 
 local liveStart = wallSeconds()
 local liveTransferred = totalTransferred
@@ -812,7 +812,7 @@ end
 
 local function drawAllMonitors()
     while true do
-        local now = os.clock()
+        local now = wallSeconds()
 
         if now >= nextLiveReset then
             local elapsed = now - liveStart
